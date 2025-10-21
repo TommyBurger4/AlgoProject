@@ -1,0 +1,33 @@
+# Recontextualization of the Context and Problem
+
+## ADEME Context and Challenges
+
+ADEME (French Environment and Energy Management Agency) has launched a call for expressions of interest to promote
+the execution of demos and experiments of new mobility solutions for people and goods, adapted to different territories.
+This initiative is part of France's environmental commitments, including a 75% reduction in greenhouse gas emissions by 2050.
+
+### Challenges
+
+The transportation and logistics sector represents the major contribution to carbon emissions and energy consumption.
+Traditional delivery methods often lead to inefficient route planning resulting in excessive fuel consumption,
+an increase in greenhouse gas emissions due to redundant trips, and poor resource optimization on deliveries.
+
+### Challenges
+
+There are new transport technologies, although more cost-effective and more environmentally friendly.
+The optimization of resource management across multiple delivery points, real-time traffic adaptation and route recalculation,
+and the coordination of multiple vehicles and time-sensitive deliveries. These logistics issues have applications in many areas such as
+mail distribution, product delivery, road network maintenance and waste collection. The environmental impact of optimizing
+these operations can be truly significant on a global scale.
+
+## The Chosen Problem
+
+CesiCDP has focused its study on delivery route optimization.
+The challenge is to calculate on a road network an optimal route that allows connecting a subset of cities by visiting selected delivery points,
+returning to the starting point ensuring a complete tour, and minimizing the total duration of the trip taking into account the expected traffic on each axis for different
+time slots.
+
+This problem, known as the Vehicle Routing Problem (VRP), extends the classic Traveling Salesman Problem (TSP) to integrate
+realistic operational constraints. Among these constraints, we find in particular the management of several delivery vehicles operating simultaneously,
+taking into account time windows for deliveries, and the integration of variable traffic conditions affecting travel times. The basic version aims
+to develop a Python model capable of solving large-scale instances involving several cities.
