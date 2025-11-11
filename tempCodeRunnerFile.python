@@ -1,0 +1,420 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import List, Tuple, Set
+import copy
+import time
+
+# Coordonnées GPS des 10 plus grandes villes françaises
+VILLES = {
+    'Paris': (48.8566, 2.3522),
+    'Marseille': (43.2965, 5.3698),
+    'Lyon': (45.7640, 4.8357),
+    'Toulouse': (43.6047, 1.4442),
+    'Nice': (43.7102, 7.2620),
+    'Nantes': (47.2184, -1.5536),
+    'Montpellier': (43.6108, 3.8767),
+    'Strasbourg': (48.5734, 7.7521),
+    'Bordeaux': (44.8378, -0.5792),
+    'Lille': (50.6292, 3.0573)
+}
+
+class VRPSolver:
+    def __init__(self, cities: dict, num_vehicles: int = 3, vehicle_capacity: int = 100):
+        """
+        Initialise le solveur VRP avec Tabu Search
+        
+        Args:
+            cities: Dictionnaire {nom_ville: (lat, lon)}
+            num_vehicles: Nombre de véhicules disponibles
+            vehicle_capacity: Capacité maximale de chaque véhicule
+        """
+        self.cities = cities
+        self.city_names = list(cities.keys())
+        self.num_cities = len(cities)
+        self.num_vehicles = num_vehicles
+        self.vehicle_capacity = vehicle_capacity
+        
+        # Matrice des distances
+        self.distance_matrix = self._calculate_distance_matrix()
+        
+        # Demandes fictives pour chaque ville (sauf le dépôt)
+        np.random.seed(42)
+        self.demands = {city: np.random.randint(10, 30) for city in self.city_names[1:]}
+        self.demands[self.city_names[0]] = 0  # Le dépôt (Paris) a une demande de 0
+        
+        self.depot = self.city_names[0]
+        
+    def _calculate_distance_matrix(self) -> np.ndarray:
+        """Calcule la matrice des distances entre toutes les villes"""
+        n = self.num_cities
+        matrix = np.zeros((n, n))
+        
+        for i, city1 in enumerate(self.city_names):
+            for j, city2 in enumerate(self.city_names):
+                if i != j:
+                    lat1, lon1 = self.cities[city1]
+                    lat2, lon2 = self.cities[city2]
+                    # Distance euclidienne approximative (en km)
+                    matrix[i][j] = np.sqrt(
+                        ((lat2 - lat1) * 111) ** 2 + 
+                        ((lon2 - lon1) * 111 * np.cos(np.radians(lat1))) ** 2
+                    )
+        return matrix
+    
+    def _get_distance(self, city1: str, city2: str) -> float:
+        """Retourne la distance entre deux villes"""
+        i = self.city_names.index(city1)
+        j = self.city_names.index(city2)
+        return self.distance_matrix[i][j]
+    
+    def _calculate_route_cost(self, route: List[str]) -> float:
+        """Calcule le coût total d'une route"""
+        cost = 0
+        for i in range(len(route) - 1):
+            cost += self._get_distance(route[i], route[i + 1])
+        return cost
+    
+    def _calculate_total_cost(self, solution: List[List[str]]) -> float:
+        """Calcule le coût total d'une solution (toutes les routes)"""
+        return sum(self._calculate_route_cost(route) for route in solution)
+    
+    def _is_feasible(self, route: List[str]) -> bool:
+        """Vérifie si une route respecte la contrainte de capacité"""
+        total_demand = sum(self.demands[city] for city in route if city != self.depot)
+        return total_demand <= self.vehicle_capacity
+    
+    def generate_initial_solution(self) -> List[List[str]]:
+        """
+        Génère une solution initiale avec une heuristique gloutonne (Nearest Neighbor)
+        """
+        unvisited = set(self.city_names[1:])  # Toutes les villes sauf le dépôt
+        solution = []
+        
+        for vehicle in range(self.num_vehicles):
+            if not unvisited:
+                break
+                
+            route = [self.depot]
+            current_city = self.depot
+            current_load = 0
+            
+            while unvisited:
+                # Trouver la ville la plus proche non visitée
+                nearest = None
+                min_dist = float('inf')
+                
+                for city in unvisited:
+                    # Vérifier la capacité
+                    if current_load + self.demands[city] <= self.vehicle_capacity:
+                        dist = self._get_distance(current_city, city)
+                        if dist < min_dist:
+                            min_dist = dist
+                            nearest = city
+                
+                if nearest is None:
+                    break
+                
+                route.append(nearest)
+                current_city = nearest
+                current_load += self.demands[nearest]
+                unvisited.remove(nearest)
+            
+            route.append(self.depot)  # Retour au dépôt
+            solution.append(route)
+        
+        # Si des villes restent non visitées, créer des routes supplémentaires
+        while unvisited:
+            route = [self.depot]
+            current_load = 0
+            cities_to_remove = []
+            
+            for city in unvisited:
+                if current_load + self.demands[city] <= self.vehicle_capacity:
+                    route.append(city)
+                    current_load += self.demands[city]
+                    cities_to_remove.append(city)
+            
+            route.append(self.depot)
+            solution.append(route)
+            
+            for city in cities_to_remove:
+                unvisited.remove(city)
+        
+        return solution
+    
+    def _get_neighbors(self, solution: List[List[str]]) -> List[Tuple[List[List[str]], str]]:
+        """
+        Génère les voisins d'une solution en utilisant plusieurs opérateurs:
+        - Swap intra-route: échange deux villes dans la même route
+        - Swap inter-route: échange deux villes de routes différentes
+        - Relocate: déplace une ville d'une route à une autre
+        """
+        neighbors = []
+        
+        # 1. Swap intra-route
+        for r_idx, route in enumerate(solution):
+            if len(route) <= 3:  # depot-city-depot
+                continue
+            for i in range(1, len(route) - 2):
+                for j in range(i + 1, len(route) - 1):
+                    new_solution = copy.deepcopy(solution)
+                    new_solution[r_idx][i], new_solution[r_idx][j] = \
+                        new_solution[r_idx][j], new_solution[r_idx][i]
+                    
+                    if self._is_feasible(new_solution[r_idx]):
+                        neighbors.append((new_solution, f"swap_intra_{r_idx}_{i}_{j}"))
+        
+        # 2. Swap inter-route
+        for r1_idx in range(len(solution)):
+            for r2_idx in range(r1_idx + 1, len(solution)):
+                route1, route2 = solution[r1_idx], solution[r2_idx]
+                
+                if len(route1) <= 2 or len(route2) <= 2:
+                    continue
+                
+                for i in range(1, len(route1) - 1):
+                    for j in range(1, len(route2) - 1):
+                        new_solution = copy.deepcopy(solution)
+                        new_solution[r1_idx][i], new_solution[r2_idx][j] = \
+                            new_solution[r2_idx][j], new_solution[r1_idx][i]
+                        
+                        if (self._is_feasible(new_solution[r1_idx]) and 
+                            self._is_feasible(new_solution[r2_idx])):
+                            neighbors.append((new_solution, f"swap_inter_{r1_idx}_{i}_{r2_idx}_{j}"))
+        
+        # 3. Relocate
+        for r1_idx in range(len(solution)):
+            for r2_idx in range(len(solution)):
+                if r1_idx == r2_idx or len(solution[r1_idx]) <= 2:
+                    continue
+                
+                for i in range(1, len(solution[r1_idx]) - 1):
+                    for j in range(1, len(solution[r2_idx])):
+                        new_solution = copy.deepcopy(solution)
+                        city = new_solution[r1_idx].pop(i)
+                        new_solution[r2_idx].insert(j, city)
+                        
+                        if (self._is_feasible(new_solution[r1_idx]) and 
+                            self._is_feasible(new_solution[r2_idx])):
+                            neighbors.append((new_solution, f"relocate_{r1_idx}_{i}_{r2_idx}_{j}"))
+        
+        return neighbors
+    
+    def tabu_search(self, max_iterations: int = 1000, tabu_tenure: int = 20) -> Tuple[List[List[str]], List[float]]:
+        """
+        Algorithme de Tabu Search
+        
+        Args:
+            max_iterations: Nombre maximum d'itérations
+            tabu_tenure: Durée de vie d'un mouvement dans la liste taboue
+            
+        Returns:
+            Meilleure solution trouvée et historique des coûts
+        """
+        print("🚀 Démarrage de la Tabu Search...")
+        print(f"Paramètres: max_iterations={max_iterations}, tabu_tenure={tabu_tenure}\n")
+        
+        # Solution initiale
+        current_solution = self.generate_initial_solution()
+        current_cost = self._calculate_total_cost(current_solution)
+        
+        best_solution = copy.deepcopy(current_solution)
+        best_cost = current_cost
+        
+        # Liste taboue: stocke les mouvements récents
+        tabu_list: List[Tuple[str, int]] = []
+        
+        # Historique pour visualisation
+        cost_history = [current_cost]
+        
+        # Compteur d'itérations sans amélioration
+        iterations_without_improvement = 0
+        
+        print(f"Solution initiale: {current_cost:.2f} km\n")
+        
+        for iteration in range(max_iterations):
+            # Générer les voisins
+            neighbors = self._get_neighbors(current_solution)
+            
+            if not neighbors:
+                print(f"⚠️  Aucun voisin trouvé à l'itération {iteration}")
+                break
+            
+            # Trouver le meilleur voisin non-tabou
+            best_neighbor = None
+            best_neighbor_cost = float('inf')
+            best_move = None
+            
+            for neighbor, move in neighbors:
+                neighbor_cost = self._calculate_total_cost(neighbor)
+                
+                # Vérifier si le mouvement est tabou
+                is_tabu = any(move == tabu_move for tabu_move, _ in tabu_list)
+                
+                # Critère d'aspiration: accepter si meilleur que la meilleure solution globale
+                aspiration = neighbor_cost < best_cost
+                
+                if (not is_tabu or aspiration) and neighbor_cost < best_neighbor_cost:
+                    best_neighbor = neighbor
+                    best_neighbor_cost = neighbor_cost
+                    best_move = move
+            
+            if best_neighbor is None:
+                print(f"⚠️  Aucun mouvement valide à l'itération {iteration}")
+                break
+            
+            # Mise à jour de la solution courante
+            current_solution = best_neighbor
+            current_cost = best_neighbor_cost
+            
+            # Ajouter le mouvement à la liste taboue
+            tabu_list.append((best_move, iteration))
+            
+            # Retirer les mouvements trop anciens de la liste taboue
+            tabu_list = [(move, iter_num) for move, iter_num in tabu_list 
+                        if iteration - iter_num < tabu_tenure]
+            
+            # Mise à jour de la meilleure solution
+            if current_cost < best_cost:
+                best_solution = copy.deepcopy(current_solution)
+                best_cost = current_cost
+                iterations_without_improvement = 0
+                print(f"✨ Itération {iteration}: Nouvelle meilleure solution trouvée: {best_cost:.2f} km")
+            else:
+                iterations_without_improvement += 1
+            
+            cost_history.append(current_cost)
+            
+            # Affichage périodique
+            if iteration % 100 == 0:
+                print(f"Itération {iteration}: Coût actuel = {current_cost:.2f} km, "
+                      f"Meilleur = {best_cost:.2f} km, Taille liste taboue = {len(tabu_list)}")
+            
+            # Critère d'arrêt anticipé
+            if iterations_without_improvement > 200:
+                print(f"\n🛑 Arrêt anticipé après {iteration} itérations (pas d'amélioration)")
+                break
+        
+        print(f"\n✅ Tabu Search terminée!")
+        print(f"Meilleure solution: {best_cost:.2f} km")
+        
+        return best_solution, cost_history
+    
+    def visualize_solution(self, solution: List[List[str]], title: str = "Solution VRP"):
+        """Visualise la solution sur une carte"""
+        plt.figure(figsize=(12, 8))
+        
+        colors = plt.cm.rainbow(np.linspace(0, 1, len(solution)))
+        
+        # Tracer les routes
+        for idx, (route, color) in enumerate(zip(solution, colors)):
+            route_coords = [self.cities[city] for city in route]
+            lats, lons = zip(*route_coords)
+            
+            plt.plot(lons, lats, 'o-', color=color, linewidth=2, 
+                    markersize=8, label=f'Véhicule {idx + 1}')
+        
+        # Marquer le dépôt
+        depot_coords = self.cities[self.depot]
+        plt.plot(depot_coords[1], depot_coords[0], 'rs', markersize=15, 
+                label='Dépôt', zorder=5)
+        
+        # Ajouter les noms des villes
+        for city, (lat, lon) in self.cities.items():
+            plt.annotate(city, (lon, lat), fontsize=9, 
+                        xytext=(5, 5), textcoords='offset points')
+        
+        plt.xlabel('Longitude')
+        plt.ylabel('Latitude')
+        plt.title(title)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+    
+    def visualize_convergence(self, cost_history: List[float]):
+        """Visualise la convergence de l'algorithme"""
+        plt.figure(figsize=(10, 6))
+        plt.plot(cost_history, linewidth=2)
+        plt.xlabel('Itération')
+        plt.ylabel('Coût total (km)')
+        plt.title('Convergence de la Tabu Search')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+    
+    def print_solution_details(self, solution: List[List[str]]):
+        """Affiche les détails de la solution"""
+        print("\n" + "="*60)
+        print("DÉTAILS DE LA SOLUTION")
+        print("="*60)
+        
+        total_cost = 0
+        for idx, route in enumerate(solution):
+            route_cost = self._calculate_route_cost(route)
+            total_cost += route_cost
+            route_demand = sum(self.demands[city] for city in route if city != self.depot)
+            
+            print(f"\nVéhicule {idx + 1}:")
+            print(f"  Route: {' → '.join(route)}")
+            print(f"  Distance: {route_cost:.2f} km")
+            print(f"  Charge: {route_demand}/{self.vehicle_capacity}")
+        
+        print(f"\n{'='*60}")
+        print(f"COÛT TOTAL: {total_cost:.2f} km")
+        print(f"{'='*60}\n")
+
+
+# ===============================
+# EXÉCUTION PRINCIPALE
+# ===============================
+
+if __name__ == "__main__":
+    # Configuration de l'encodage pour Windows
+    import sys
+    import io
+    if sys.platform == 'win32':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    
+    print("VRP - 10 Plus Grandes Villes Francaises")
+    print("="*60 + "\n")
+    
+    # Créer le solveur
+    solver = VRPSolver(VILLES, num_vehicles=3, vehicle_capacity=100)
+    
+    print("Villes:", ", ".join(VILLES.keys()))
+    print(f"Nombre de véhicules: {solver.num_vehicles}")
+    print(f"Capacité par véhicule: {solver.vehicle_capacity}")
+    print(f"\nDemandes par ville:")
+    for city, demand in solver.demands.items():
+        if city != solver.depot:
+            print(f"  {city}: {demand}")
+    print()
+    
+    # Générer et afficher la solution initiale
+    initial_solution = solver.generate_initial_solution()
+    print("\n📍 SOLUTION INITIALE (Heuristique Greedy)")
+    solver.print_solution_details(initial_solution)
+    
+    # Exécuter la Tabu Search
+    start_time = time.time()
+    best_solution, cost_history = solver.tabu_search(max_iterations=1000, tabu_tenure=20)
+    end_time = time.time()
+    
+    print(f"\n⏱️  Temps d'exécution: {end_time - start_time:.2f} secondes")
+    
+    # Afficher la meilleure solution
+    print("\n📍 MEILLEURE SOLUTION TROUVÉE")
+    solver.print_solution_details(best_solution)
+    
+    # Calculer l'amélioration
+    initial_cost = solver._calculate_total_cost(initial_solution)
+    final_cost = solver._calculate_total_cost(best_solution)
+    improvement = ((initial_cost - final_cost) / initial_cost) * 100
+    
+    print(f"📊 Amélioration: {improvement:.2f}% par rapport à la solution initiale\n")
+    
+    # Visualisation
+    solver.visualize_solution(initial_solution, "Solution Initiale (Greedy)")
+    solver.visualize_solution(best_solution, "Meilleure Solution (Tabu Search)")
+    solver.visualize_convergence(cost_history)
